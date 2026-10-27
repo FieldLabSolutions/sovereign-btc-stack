@@ -27,6 +27,6 @@ jobs:
           provenance: false
           labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
           tags: |
-            ghcr.io/fieldlabsolutions/sovereign-btc-stack:2.0.0
+            ghcr.io/fieldlabsolutions/sovereign-btc-stack:2.1.0
             ghcr.io/fieldlabsolutions/sovereign-btc-stack:latest
       - run: echo "DIGEST=${{ steps.build.outputs.digest }}"

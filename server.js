@@ -217,5 +217,5 @@ http.createServer((req, res) => {
   if (!f.startsWith(PUB)) { res.writeHead(403); return res.end(); }
   fs.readFile(f, (e, d) => { if (e) { res.writeHead(404); return res.end('not found'); }
     const ext = path.extname(f); res.writeHead(200, { 'Content-Type': { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png' }[ext] || 'application/octet-stream' }); res.end(d); });
-}).listen(PORT, () => console.log(`Sovereign BTC Stack v2 on :${PORT}${DEMO ? ' (DEMO)' : ''}${RPC ? ' (RPC configured)' : ''}`));
+}).listen(PORT, () => console.log(`Sovereign BTC Stack v2.1 on :${PORT}${DEMO ? ' (DEMO)' : ''}${RPC ? ' (RPC configured)' : ''}`));
 if (!DEMO) { poll(); setInterval(poll, POLL); }

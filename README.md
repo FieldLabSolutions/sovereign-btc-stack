@@ -1,4 +1,4 @@
-# Sovereign BTC Stack (v2.0)
+# Sovereign BTC Stack (v2.1)
 
 ![dashboard](screenshot.png)
 Read-only monitoring dashboard for a Bitcoin node (built for "Node Master", Umbrel on Raspberry Pi 5).
