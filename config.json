@@ -1,0 +1,35 @@
+{
+  "pollSeconds": 15,
+  "historyHours": 24,
+  "bucketMinutes": 5,
+  "alerts": { "enabled": false, "webhookUrl": "", "note": "Off by default. When enabled, POSTs {service,status,detail} to webhookUrl on a state change." },
+  "slots": [
+    { "id": "node",      "label": "Bitcoin Node",     "options": ["bitcoin", "bitcoin-knots"] },
+    { "id": "indexer",   "label": "Indexer",          "options": ["electrs", "fulcrum"] },
+    { "id": "explorer",  "label": "Explorer",         "options": ["mempool"] },
+    { "id": "lightning", "label": "Lightning",        "options": ["lightning", "core-lightning"] },
+    { "id": "ui",        "label": "Lightning UI",     "options": ["ride-the-lightning", "thunderhub"] },
+    { "id": "mining",    "label": "Mining",           "options": ["etbc-pool", "miner-controller"] }
+  ],
+  "links": [
+    { "from": "node", "to": "indexer",   "label": "RPC" },
+    { "from": "node", "to": "explorer",  "label": "RPC" },
+    { "from": "indexer", "to": "explorer", "label": "Electrum" },
+    { "from": "node", "to": "lightning", "label": "RPC/ZMQ" },
+    { "from": "lightning", "to": "ui",   "label": "gRPC/REST" },
+    { "from": "node", "to": "mining",    "label": "getblocktemplate" }
+  ],
+  "services": {
+    "bitcoin":            { "label": "Bitcoin Core",   "host": "10.21.21.8",  "port": 8332,  "probe": "bitcoin-rpc", "uiPort": 2100, "verified": true },
+    "bitcoin-knots":      { "label": "Bitcoin Knots",  "host": "10.21.21.7",  "port": 9332,  "probe": "bitcoin-rpc", "uiPort": 2105, "verified": true },
+    "electrs":            { "label": "Electrs",        "host": "10.21.21.10", "port": 50001, "probe": "electrum",    "uiPort": 2102, "verified": true },
+    "fulcrum":            { "label": "Fulcrum",        "host": "10.21.21.200","port": 50002, "probe": "electrum",    "uiPort": 2109, "verified": true },
+    "mempool":            { "label": "Mempool",        "host": "10.21.21.27", "port": 8999,  "probe": "mempool",     "uiPort": 3006, "verified": true },
+    "lightning":          { "label": "LND",            "host": "10.21.21.9",  "port": 8080,  "probe": "lnd",         "uiPort": 2101, "verified": true },
+    "core-lightning":     { "label": "Core Lightning", "host": "10.21.21.96", "port": 9736,  "probe": "tcp",         "uiPort": 2103, "verified": true },
+    "ride-the-lightning": { "label": "Ride The Lightning", "probe": "ui",     "uiPort": 3001, "verified": true },
+    "thunderhub":         { "label": "ThunderHub",     "probe": "ui",         "uiPort": 3000, "verified": true },
+    "etbc-pool":          { "label": "ETBC Pool",      "probe": "ui",         "uiPort": null, "verified": false },
+    "miner-controller":   { "label": "Miner Controller","probe": "ui",        "uiPort": null, "verified": false }
+  }
+}
