@@ -50,9 +50,15 @@ svg.big{width:100%;height:50px}
 #flow .svc{flex-wrap:wrap;gap:6px}#flow .chev{display:none}
 .sysbox{grid-area:sys;position:relative;z-index:1}.sysbox .sys{margin:6px 0 0}
 .wl{font:10px system-ui;fill:#8b949e}
+.gd{font-size:12px;color:#c9d1d9;opacity:.85;margin-top:4px;line-height:1.35}
+#lk{margin-top:22px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+.li{display:flex;gap:10px;font-size:13px;padding:7px 0;border-top:1px solid #21262d;line-height:1.35}.li b{flex:none;width:22px;height:22px;border-radius:50%;border:1.5px solid;display:grid;place-items:center;font-size:11px}
+.li span{font-weight:600}.li.down b,.li.down span{color:var(--down)}.li.warn b,.li.warn span{color:var(--warn)}.li.waiting b,.li.waiting span{color:var(--wait)}
+.lg{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:8px;font-size:11px;color:var(--mut)}.lg span{display:flex;align-items:center;gap:5px}
+@media(min-width:900px){#flow .gd{font-size:clamp(12px,.8vw,16px)}#lk{font-size:15px}.li{font-size:15px}}
 </style></head><body>
 <header><h1>₿ Sovereign BTC Stack</h1><div id="meta">Connecting…</div><div id="sum"></div><div id="demo"></div></header>
-<main><div id="flow"></div></main>
+<main><div id="flow"></div><div id="lkw"></div></main>
 <div id="sheet" onclick="if(event.target===this)closeSheet()"><div class="in" id="sheetIn"></div></div>
 <script>
 const $=s=>document.querySelector(s), open={}, gb=x=>(x/1e9).toFixed(1), fmt=n=>n==null?'—':Number(n).toLocaleString();
@@ -73,16 +79,23 @@ function slotHTML(sl){const a=sl.active[0], st=a?a.status:'empty';
  if(a){for(const o of sl.active){const d=o.data, sync=d.sync!=null&&d.sync<100;
   h+=`<div class="svc" onclick="showDetail('${o.id}')"><span class="dot ${o.status}"></span><span class="n">${o.label} ›</span></div>
   <div class="r ${o.status}" onclick="showDetail('${o.id}')">${o.status==='down'?'⚠ ':''}${o.reason}${d.headers!=null?' · '+fmt(d.height):''}${d.height!=null&&d.headers==null&&d.walletState===undefined?' · '+fmt(d.height):''}</div>
+  ${o.guide?`<div class="gd">${o.guide}</div>`:''}
   ${sync?`<div class="bar"><i style="width:${d.sync}%"></i></div>`:''}${spark(o.history)}
   ${o.uiPort?`<div class="row2"><a class="ui" href="${uiUrl(o.uiPort)}" target="_blank" rel="noopener">Open UI ↗</a></div>`:''}`}}
  else h+=`<div class="svc"><span class="dot"></span><span class="n">Not installed</span></div>`;
  if(sl.others.length){h+=`<button class="more" onclick="tog('${sl.id}')">${open[sl.id]?'Hide':'See other'} options (${sl.others.length})</button>`;
   if(open[sl.id])h+=`<div class="alts">${sl.others.map(o=>`<div class="alt"><span>○ ${o.label}</span><span>in Umbrel App Store</span></div>`).join('')}</div>`}
  return h+'</div>'}
-const COL={ok:'#3fb950',warn:'#d29922',down:'#f85149',waiting:'#58a6ff',empty:'#484f58'};
+const COL={ok:'#3fb950',warn:'#d29922',down:'#f85149',waiting:'#58a6ff',empty:'#484f58',unknown:'#6e7681'};
+const DASH={down:'3 7',empty:'5 5',unknown:'5 5'}, LNAME=id=>{const s=S.slots.find(x=>x.id===id);return s&&s.active[0]?s.active[0].label:s?s.label:id};
+let FLAG=[];
+function linksHTML(){FLAG=S.links.filter(l=>['down','warn','waiting'].includes(l.status));
+ const T={down:'Broken',warn:'Behind / syncing',waiting:'Waiting'};
+ return `<section id="lk"><div class="k">Connections${FLAG.length?'':' · all verified links OK'}</div>${FLAG.map((l,i)=>`<div class="li ${l.status}"><b>${i+1}</b><div><span>${LNAME(l.from)} → ${LNAME(l.to)} · ${T[l.status]}</span><br>${l.guide}</div></div>`).join('')}
+ <div class="lg">${[['ok','solid','Working, verified'],['warn','solid','Syncing or behind'],['down','broken','Can\'t communicate'],['waiting','solid','Waiting on you'],['unknown','dashed','Unknown / not installed']].map(([k,t,x])=>`<span><svg width="26" height="8"><line x1="0" y1="4" x2="26" y2="4" stroke="${COL[k]}" stroke-width="3" ${t!=='solid'?`stroke-dasharray="${t==='broken'?'3 4':'5 4'}"`:''}/></svg>${x}</span>`).join('')}</div></section>`}
 function wires(){const f=$('#flow');if(!f||!S)return;const fr=f.getBoundingClientRect();let svg=`<svg id="wires">${Object.entries(COL).map(([k,c])=>`<marker id="m-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="${c}"/></marker>`).join('')}`;
  for(const l of S.links){const A=$('#b-'+l.from),B=$('#b-'+l.to);if(!A||!B)continue;const a=A.getBoundingClientRect(),b=B.getBoundingClientRect();
-  const st=l.status==='empty'?'empty':l.status, c=COL[st]||COL.ok; let d,lx,ly;
+  const st=COL[l.status]?l.status:'unknown', c=COL[st]; let d,lx,ly;
   const ax=a.left-fr.left,ay=a.top-fr.top,bx=b.left-fr.left,by=b.top-fr.top;
   if(l.from==='node'&&l.to==='explorer'){ // skips a row: route down the left gutter
    const y1=ay+a.height/2,x1=ax,y2=by+20,g=5;d=`M${x1},${y1} L${g},${y1} L${g},${y2} L${bx-2},${y2}`;lx=g;ly=(y1+y2)/2;}
@@ -90,8 +103,10 @@ function wires(){const f=$('#flow');if(!f||!S)return;const fr=f.getBoundingClien
    const x1=Math.min(Math.max(bx+b.width/2,ax+12),ax+a.width-12),y1=ay+a.height,x2=bx+b.width/2,y2=by-2,m=(y1+y2)/2;
    d=`M${x1},${y1} C${x1},${m} ${x2},${m} ${x2},${y2}`;lx=(x1+x2)/2;ly=m;}
   else { const y=Math.max(ay,by)+18,r=bx>ax,x1=r?ax+a.width:ax,x2=r?bx-2:bx+b.width+2;d=`M${x1},${y} L${x2},${y}`;lx=(x1+x2)/2;ly=y;}
-  svg+=`<path d="${d}" fill="none" stroke="${c}" stroke-width="2.5" ${st==='empty'?'stroke-dasharray="5 5"':''} marker-end="url(#m-${st})"/>`;
-  if(st==='down')svg+=`<g><circle cx="${lx}" cy="${ly}" r="9" fill="#0d1117" stroke="${c}"/><text x="${lx}" y="${ly+4}" text-anchor="middle" font-size="11" fill="${c}">⚠</text></g>`;
+  svg+=`<path d="${d}" fill="none" stroke="${c}" stroke-width="${st==='down'?3:2.5}" ${DASH[st]?`stroke-dasharray="${DASH[st]}"`:''} marker-end="url(#m-${st})"/>`;
+  const n=FLAG.indexOf(l)+1;
+  if(st==='down')svg+=`<g><line x1="${lx-8}" y1="${ly-8}" x2="${lx+8}" y2="${ly+8}" stroke="${c}" stroke-width="3"/><line x1="${lx+8}" y1="${ly-8}" x2="${lx-8}" y2="${ly+8}" stroke="${c}" stroke-width="3"/><circle cx="${lx+14}" cy="${ly-10}" r="8" fill="#0d1117" stroke="${c}"/><text x="${lx+14}" y="${ly-6}" text-anchor="middle" font-size="10" font-weight="700" fill="${c}">${n}</text></g>`;
+  else if(n)svg+=`<g><circle cx="${lx}" cy="${ly}" r="9" fill="#0d1117" stroke="${c}" stroke-width="1.5"/><text x="${lx}" y="${ly+4}" text-anchor="middle" font-size="11" font-weight="700" fill="${c}">${n}</text></g>`;
  }
  const old=$('#wires');if(old)old.remove();f.insertAdjacentHTML('afterbegin',svg+'</svg>')}
 function sysHTML(sy){if(!sy)return '';const memL=sy.memAvail<1e9,sw=sy.swapTotal?sy.swapUsed/sy.swapTotal:0,dk=sy.disk?1-sy.disk.free/sy.disk.total:null;
@@ -99,15 +114,15 @@ function sysHTML(sy){if(!sy)return '';const memL=sy.memAvail<1e9,sw=sy.swapTotal
    .map(([v,l,bad])=>`<div class="g"><b style="color:${bad?'#f85149':'#e6edf3'}">${v}</b><span>${l}</span></div>`).join('')}</div></div>`}
 function render(){if(!S)return;const all=S.slots.flatMap(s=>s.active),c=k=>all.filter(o=>o.status===k).length;
  $('#meta').textContent=`Node Master · updated ${new Date(S.updated).toLocaleTimeString()}${S.demo?' · DEMO':''}`;
- $('#sum').innerHTML=[['ok','OK','#3fb950'],['warn','Lagging','#d29922'],['waiting','Waiting','#58a6ff'],['down','Down','#f85149']].filter(([k])=>c(k)).map(([k,t,col])=>`<span class="pill" style="color:${col}">● ${c(k)} ${t}</span>`).join('');
- $('#flow').innerHTML=S.slots.map(slotHTML).join(''); requestAnimationFrame(wires);
+ $('#sum').innerHTML=[['ok','OK','#3fb950'],['warn','Syncing / behind','#d29922'],['waiting','Waiting','#58a6ff'],['down','Down','#f85149']].filter(([k])=>c(k)).map(([k,t,col])=>`<span class="pill" style="color:${col}">● ${c(k)} ${t}</span>`).join('');
+ $('#lkw').innerHTML=linksHTML();$('#flow').innerHTML=S.slots.map(slotHTML).join(''); requestAnimationFrame(wires);
  if(detail)showDetail(detail,true);
  if(S.demo){$('#demo').style.display='flex';$('#demo').innerHTML=S.scenarios.map(x=>`<button class="${x===scen?'on':''}" onclick="scen='${x}';load()">${x}</button>`).join('')}}
 addEventListener('resize',()=>requestAnimationFrame(wires));
 function tog(id){open[id]=!open[id];render()}
 function showDetail(id,keep){const o=S.slots.flatMap(s=>s.active).find(o=>o.id===id);if(!o)return closeSheet();detail=id;
  $('#sheetIn').innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center"><div><div class="k">${S.slots.find(s=>s.active.includes(o)).label}</div><div style="font-size:20px;font-weight:600"><span class="dot ${o.status}" style="display:inline-block"></span> ${o.label}</div></div><button style="flex:none" onclick="closeSheet()">✕</button></div>
- <div class="r ${o.status}" style="margin-top:6px">${o.reason}</div>${o.data.sync!=null&&o.data.sync<100?`<div class="bar"><i style="width:${o.data.sync}%"></i></div>`:''}
+ <div class="r ${o.status}" style="margin-top:6px">${o.reason}</div><div class="gd">${o.guide||''}</div>${o.data.sync!=null&&o.data.sync<100?`<div class="bar"><i style="width:${o.data.sync}%"></i></div>`:''}
  <div class="kv">${metrics(o).map(([k,v])=>`<div><span>${k}</span><b>${v}</b></div>`).join('')}</div>
  <div class="k">Up/down · last 24h</div>${spark(o.history,'big')||'<div class="r unknown">No history yet</div>'}
  ${o.uiPort?`<div class="row2"><a class="ui" href="${uiUrl(o.uiPort)}" target="_blank" rel="noopener">Open ${o.label} ↗</a></div>`:''}`;$('#sheet').classList.add('on')}

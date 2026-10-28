@@ -1,16 +1,26 @@
-# Sovereign BTC Stack (v2.1)
-
-![dashboard](screenshot.png)
+# Sovereign BTC Stack (v2.2)
 Read-only monitoring dashboard for a Bitcoin node (built for "Node Master", Umbrel on Raspberry Pi 5).
 Each slot (Node, Indexer, Explorer, Lightning, Lightning UI, Mining) shows only the app that is detected;
 alternatives sit behind a small "See other options" button. Tap a service for its detail view.
-Lines between slots turn amber when a part is lagging/waiting and red when a part is down.
+Part dashboard, part guide: every box and every flagged line has a plain-words line saying what the part does, what is wrong, and what to do.
+
+**Lines (v2.2) show real link health, not just "both ends up":**
+- green solid: verified working
+- amber: upstream still syncing or downstream behind / still indexing
+- red broken (dashed + ✕): downstream can't communicate with upstream (one end down / API not answering)
+- blue: waiting on you (e.g. LND wallet not created)
+- gray dashed: not installed or can't be checked
+
+**Core sync without an RPC login:** compares Mempool's tip height and newest-block time and the Electrs index height,
+plus an optional public tip (`https://mempool.space/api/blocks/tip/height`, cached 5 min; set `REFERENCE_TIP_URL=` empty to disable;
+works offline). Shows "Syncing - catching up" (amber) when evidence says the chain is behind, "at chain tip (checked via Mempool)" when verified,
+and amber "can't verify sync" when there is no evidence — never a false green.
 
 Zero dependencies: Node.js 18.15+, `server.js` + `public/index.html`. MIT.
 
 ## Run
     DEMO=1 node server.js            # fake data; pick scenario in the header or ?scenario=
-                                     # all-green | mempool-down | core-syncing | lnd-waiting | knots
+                                     # healthy | syncing-no-rpc | syncing-rpc | electrs-down | mempool-down | lnd-waiting | cant-verify | knots
     node server.js                   # real probes, port 3880 (PORT to change)
 
 ## Env
@@ -23,11 +33,12 @@ Zero dependencies: Node.js 18.15+, `server.js` + `public/index.html`. MIT.
 | DATA_PATH | disk for the System panel (default /mnt/data) |
 | UI_PROBE_HOST | host to TCP-probe UI-only apps (RTL, ThunderHub); unset = shown grey "no health probe" |
 | HISTORY_FILE | 24h ring buffer (5-min buckets), default data/history.json |
+| REFERENCE_TIP_URL | optional public tip height URL for sync detection (default mempool.space; empty = off) |
 | ALERT_WEBHOOK_URL | **off by default**. If set (or `alerts.enabled` in config.json), POSTs `{service,status,detail}` on each state change. |
 
 Statuses: ok (green), warn (amber: syncing, >3 blocks behind node, no peers), waiting (blue: LND wallet not created/locked — normal, not an error), down (red), unknown (grey).
 Read-only: HTTP server answers GET/HEAD only (405 otherwise); probes are TCP connects, GETs, the Electrum `blockchain.headers.subscribe` call and read-only RPC methods.
-"Open UI" links use the page's own hostname + the app's Umbrel port, so they work via umbrel.local or the node's LAN IP.
+"Open UI" links use the page's own hostname + the app's Umbrel port, so they work via umbrel.local or 192.168.4.60.
 
 ## Ports / addresses
 Verified 2026-10-27 against getumbrel/umbrel-apps `master` (`<app>/umbrel-app.yml` port, `<app>/exports.sh`, mempool `docker-compose.yml`). Not yet checked live on Node Master.
@@ -50,4 +61,4 @@ whether an app container can reach these 10.21.21.x IPs without joining the Umbr
 LND `/v1/state` path is standard LND REST but not tested against this install; mounting `${UMBREL_ROOT}/app-data` read-only in a community app.
 
 ## Umbrel package
-Umbrel community store: https://github.com/FieldLabSolutions/fieldlab-umbrel-store
+`umbrel-package/` is an **UNTESTED** skeleton (store yml + app folder with umbrel-app.yml, docker-compose.yml, exports.sh). `Dockerfile` builds the image; nothing is built or pushed.

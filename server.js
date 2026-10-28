@@ -1,4 +1,4 @@
-// Sovereign BTC Stack v2 — read-only monitoring server. MIT License. No dependencies.
+// Sovereign BTC Stack v2.2 — read-only monitoring server. MIT License. No dependencies.
 'use strict';
 const http = require('http'), https = require('https'), net = require('net'), fs = require('fs'), os = require('os'), path = require('path');
 const PORT = +process.env.PORT || 3880;
@@ -71,7 +71,10 @@ const probes = {
   async mempool(svc) {
     try { const r = await get(`http://${svc.host}:${svc.port}/api/v1/blocks/tip/height`);
       if (r.code >= 500) return { up: false, note: 'API error ' + r.code };
-      const h = parseInt(r.body, 10); return { up: true, api: true, height: isNaN(h) ? undefined : h };
+      const h = parseInt(r.body, 10), out = { up: true, api: true, height: isNaN(h) ? undefined : h };
+      try { const b = JSON.parse((await get(`http://${svc.host}:${svc.port}/api/v1/blocks`)).body); // newest block first
+        if (Array.isArray(b) && b[0] && b[0].timestamp) out.tipTime = b[0].timestamp; } catch {}
+      return out;
     } catch { return { up: await tcp(svc.host, svc.port), api: false }; }
   },
   async lnd(svc) {
@@ -96,6 +99,17 @@ function detectInstalled(id) {
   try { return fs.statSync(path.join(APP_DATA_DIR, id)).isDirectory(); } catch { return false; }
 }
 
+// ---------- optional public reference tip (works fine without outbound internet) ----------
+const REF_URL = process.env.REFERENCE_TIP_URL === undefined ? 'https://mempool.space/api/blocks/tip/height' : process.env.REFERENCE_TIP_URL;
+let refTip = { height: null, at: 0 };
+async function referenceTip() {
+  if (!REF_URL) return null;
+  if (Date.now() - refTip.at < 5 * 60e3) return refTip.height;
+  refTip.at = Date.now();
+  try { const r = await get(REF_URL, { ms: 4000 }); const h = parseInt(r.body, 10); refTip.height = r.code === 200 && h > 0 ? h : null; } catch { refTip.height = null; }
+  return refTip.height;
+}
+
 // ---------- system ----------
 function system() {
   const mi = {}; try { for (const l of fs.readFileSync('/proc/meminfo', 'utf8').split('\n')) { const [k, v] = l.split(':'); if (v) mi[k] = parseInt(v, 10) * 1024; } } catch {}
@@ -106,24 +120,80 @@ function system() {
 }
 
 // ---------- evaluation ----------
-// status: ok | warn | down | waiting | unknown
-function evaluate(id, r, nodeHeight) {
-  if (r.up === false) return { status: 'down', reason: r.note || 'Not reachable' };
-  if (r.up === null) return { status: 'unknown', reason: 'Installed (no health probe)' };
+// status: ok | warn | down | waiting | unknown.  Every status carries a plain-words `guide`.
+const GUIDE = {
+  bitcoin: 'The Bitcoin node checks every block and feeds all the other apps.',
+  'bitcoin-knots': 'The Bitcoin node checks every block and feeds all the other apps.',
+  electrs: 'Electrs indexes addresses so wallets and Mempool can look up balances.',
+  fulcrum: 'Fulcrum indexes addresses so wallets and Mempool can look up balances.',
+  mempool: 'Mempool is your private block explorer, reading from your own node.',
+  lightning: 'LND runs your Lightning node for fast, cheap payments.',
+  'core-lightning': 'Core Lightning runs your Lightning node for fast, cheap payments.',
+  'ride-the-lightning': 'A web page for managing Lightning channels.',
+  thunderhub: 'A web page for managing Lightning channels.',
+  'etbc-pool': 'Your solo mining pool. Miners send work here; it gets block templates from the node.',
+  'miner-controller': 'Controls your miners (modes, schedules, heat rules).'
+};
+// Chain evidence when there is no RPC login: Mempool's tip height + tip block time, Electrs height, optional public tip.
+function chainEvidence(results, ref) {
+  const mp = results.mempool && results.mempool.installed ? results.mempool.data : {};
+  const ex = ['electrs', 'fulcrum'].map(i => results[i]).find(r => r && r.installed);
+  const ev = { mempoolH: mp.height, tipTime: mp.tipTime, indexH: ex ? ex.data.height : undefined, ref };
+  ev.tipAgeH = ev.tipTime ? (Date.now() / 1000 - ev.tipTime) / 3600 : null;
+  const best = Math.max(...[ev.mempoolH, ev.indexH].filter(x => x != null), -1);
+  ev.best = best >= 0 ? best : null;
+  if (ref && ev.best != null && ref - ev.best > 3) { ev.syncing = true; ev.pct = +(ev.best / ref * 100).toFixed(1); ev.behind = ref - ev.best; }
+  else if (ev.tipAgeH != null && ev.tipAgeH > 3) { ev.syncing = true; ev.tipDate = new Date(ev.tipTime * 1000).toISOString().slice(0, 10); }
+  else if (ev.tipAgeH != null || (ref && ev.best != null)) ev.atTip = true;
+  return ev;
+}
+function evaluate(id, r, ctx) {
+  const g = GUIDE[id] || '';
+  if (r.up === false) return { status: 'down', reason: r.note || 'Not reachable', guide: `${g} It is not answering. Open it in Umbrel and restart it if it stays red.` };
+  if (r.up === null) return { status: 'unknown', reason: 'Installed (no health probe yet)', guide: `${g} This dashboard can't check its health yet, so it shows gray, not green.` };
   if (id === 'bitcoin' || id === 'bitcoin-knots') {
-    if (r.ibd || (r.sync != null && r.sync < 99.9)) return { status: 'warn', reason: `Syncing ${r.sync}%` };
-    if (r.peers === 0) return { status: 'warn', reason: 'No peers' };
-    return { status: 'ok', reason: r.height != null ? 'Synced' : 'Up' };
+    if (r.headers != null) {   // full RPC data
+      if (r.ibd || (r.sync != null && r.sync < 99.9)) return { status: 'warn', reason: `Syncing ${r.sync}%`, guide: `${g} It is still downloading the chain. Electrs, Mempool and Lightning will be behind until it finishes. Nothing to fix.` };
+      if (r.peers === 0) return { status: 'warn', reason: 'No peers', guide: `${g} It has no connections to other nodes. Check the internet/Tor connection.` };
+      return { status: 'ok', reason: 'Synced', guide: `${g} Fully synced.` };
+    }
+    const e = ctx.ev;
+    if (e.syncing) return { status: 'warn', reason: 'Syncing - catching up', sync: e.pct, evidence: true,
+      guide: `${g} It is still downloading the chain${e.pct != null ? ` (about ${e.pct}%, ${e.behind.toLocaleString()} blocks to go)` : e.tipDate ? ` (newest block it has is from ${e.tipDate})` : ''}. Electrs and Mempool will be behind until it finishes. Nothing to fix.` };
+    if (e.atTip) return { status: 'ok', reason: 'Up · at chain tip (checked via Mempool)', guide: `${g} Mempool shows it at the current tip.` };
+    return { status: 'warn', reason: "Up · can't verify sync", guide: `${g} It is running, but without Mempool or an RPC login this dashboard can't tell if it is synced.` };
   }
   if (r.walletState !== undefined) {
-    if (['NON_EXISTING', 'WAITING_TO_START'].includes(r.walletState)) return { status: 'waiting', reason: 'Waiting for wallet' };
-    if (r.walletState === 'LOCKED') return { status: 'waiting', reason: 'Wallet locked' };
-    if (r.synced === false) return { status: 'warn', reason: 'Syncing to chain' };
-    return { status: 'ok', reason: 'Running' };
+    if (['NON_EXISTING', 'WAITING_TO_START'].includes(r.walletState)) return { status: 'waiting', reason: 'Waiting for wallet', guide: `${g} No wallet yet. Open LND in Umbrel and create it; write the 24 words on paper.` };
+    if (r.walletState === 'LOCKED') return { status: 'waiting', reason: 'Wallet locked', guide: `${g} The wallet is locked. Open LND in Umbrel to unlock it.` };
+    if (r.synced === false) return { status: 'warn', reason: 'Syncing to chain', guide: `${g} It is catching up to the node. Nothing to fix.` };
+    if (r.synced === undefined) return { status: ctx.ev.syncing ? 'warn' : 'ok', reason: ctx.ev.syncing ? 'Running · node still syncing' : 'Running', guide: ctx.ev.syncing ? `${g} It can't fully work until the node finishes syncing.` : `${g} Running.` };
+    return { status: 'ok', reason: 'Running', guide: `${g} Running and synced.` };
   }
-  if (r.api === false) return { status: 'down', reason: 'API not answering' };
-  if (r.height != null && nodeHeight != null && nodeHeight - r.height > 3) return { status: 'warn', reason: `${(nodeHeight - r.height).toLocaleString()} blocks behind node` };
-  return { status: 'ok', reason: r.note || 'Up' };
+  if (r.api === false) return { status: 'down', reason: 'API not answering', guide: `${g} The port is open but its API is not answering. Restart it in Umbrel if it stays red.` };
+  if (id === 'electrs' || id === 'fulcrum') {
+    if (r.height == null) return { status: 'warn', reason: r.note || 'Indexing', guide: `${g} It is building its index and can't answer lookups yet.${ctx.ev.syncing ? ' It has to wait for the node to finish syncing first.' : ''} Nothing to fix.` };
+  }
+  const top = ctx.ev.ref || ctx.nodeHeight || ctx.ev.best;
+  if (r.height != null && top != null && top - r.height > 3) return { status: 'warn', reason: `${(top - r.height).toLocaleString()} blocks behind`, guide: `${g} It is behind the chain tip${ctx.ev.syncing ? ' because the node is still syncing' : ''}. It will catch up on its own.` };
+  if (ctx.ev.syncing && id === 'mempool') return { status: 'warn', reason: 'Up · following a syncing node', guide: `${g} It shows the node's current (old) tip until the node finishes syncing. Nothing to fix.` };
+  return { status: 'ok', reason: r.note || 'Up', guide: `${g} Working.` };
+}
+
+// Link health: is the downstream actually getting what it needs from the upstream?
+function linkHealth(l, S) {
+  const A = S[l.from], B = S[l.to], an = A && A.label, bn = B && B.label;
+  if (!A || !B) return { status: 'empty', guide: `${!A ? 'Nothing' : an} → ${!B ? 'nothing' : bn}: not installed.` };
+  if (A.status === 'down') return { status: 'down', guide: `${bn} can't reach ${an} because ${an} is down. Fix ${an} first.` };
+  if (B.status === 'down') return { status: 'down', guide: `${bn} is down, so it is not getting data from ${an}. Restart ${bn} in Umbrel.` };
+  if (A.status === 'unknown' || B.status === 'unknown') return { status: 'unknown', guide: `Can't check the ${an} → ${bn} link yet.` };
+  if (B.status === 'waiting') return { status: 'waiting', guide: `${bn} is waiting (${B.reason.toLowerCase()}) before it uses ${an}.` };
+  if (A.status === 'waiting') return { status: 'waiting', guide: `${an} is waiting (${A.reason.toLowerCase()}), so ${bn} has nothing to use yet.` };
+  if (l.to === 'explorer' && l.from === 'indexer' && B.id && A.data.height == null) return { status: 'warn', guide: `${an} is still indexing, so Mempool address lookups won't work yet. Nothing to fix.` };
+  if (A.status === 'warn') return { status: 'warn', guide: `${an} is not fully ready (${A.reason}), so ${bn} is behind too. Nothing to fix.` };
+  if (B.status === 'warn') return { status: 'warn', guide: `${bn} is behind ${an} (${B.reason}). It will catch up.` };
+  if (A.status === 'ok' && B.status === 'ok') return { status: 'ok', guide: `${an} → ${bn}: working.` };
+  return { status: 'unknown', guide: `Can't verify the ${an} → ${bn} link.` };
 }
 
 // ---------- history (ring buffer of buckets, persisted) ----------
@@ -147,30 +217,31 @@ function alert(id, s) {
 
 // ---------- poll ----------
 let state = { updated: null, demo: DEMO, slots: [], links: [], system: null };
-function build(results, sys) {
+function build(results, sys, ref) {
   const nodeSlot = cfg.slots.find(s => s.id === 'node');
   const nodeId = nodeSlot.options.find(o => results[o] && results[o].installed);
-  const nodeHeight = nodeId ? results[nodeId].data.height : null;
+  const nodeHeight = nodeId && results[nodeId].data.headers != null ? results[nodeId].data.height : null;
+  const ctx = { ev: chainEvidence(results, ref), nodeHeight };
   const slots = cfg.slots.map(sl => {
     const opts = sl.options.map(id => {
       const svc = cfg.services[id], r = results[id] || { installed: false, data: {} };
-      const ev = r.installed ? evaluate(id, r.data, nodeHeight) : { status: 'available', reason: 'Not installed' };
+      const ev = r.installed ? evaluate(id, r.data, ctx) : { status: 'available', reason: 'Not installed', guide: GUIDE[id] || '' };
       if (r.installed) { record(id, ev.status !== 'down'); alert(id, ev); }
-      return { id, label: svc.label, installed: r.installed, uiPort: svc.uiPort, ...ev, data: r.installed ? r.data : {}, history: (hist[id] || []).map(b => +(b.up / b.n).toFixed(2)) };
+      const data = r.installed ? { ...r.data } : {};
+      if (ev.sync != null && data.sync == null) data.sync = ev.sync;
+      return { id, label: svc.label, installed: r.installed, uiPort: svc.uiPort, ...ev, data, history: (hist[id] || []).map(b => +(b.up / b.n).toFixed(2)) };
     });
     const active = opts.filter(o => o.installed);
     return { id: sl.id, label: sl.label, active, others: opts.filter(o => !o.installed) };
   });
-  const st = Object.fromEntries(slots.map(s => [s.id, s.active.length ? s.active[0].status : 'empty']));
-  const links = cfg.links.map(l => {
-    const a = st[l.from], b = st[l.to]; let status = 'ok';
-    if (a === 'empty' || b === 'empty') status = 'empty'; else if (a === 'down' || b === 'down') status = 'down'; else if (a === 'warn' || b === 'warn' || a === 'waiting' || b === 'waiting') status = 'warn';
-    return { ...l, status };
-  });
-  return { updated: new Date().toISOString(), demo: DEMO, slots, links, system: sys };
+  const S = Object.fromEntries(slots.map(s => [s.id, s.active[0]]));
+  const links = cfg.links.map(l => ({ ...l, ...linkHealth(l, S) }));
+  return { updated: new Date().toISOString(), demo: DEMO, slots, links, system: sys,
+    chain: { referenceTip: ref || null, mempoolTip: ctx.ev.mempoolH ?? null, indexTip: ctx.ev.indexH ?? null } };
 }
 async function poll() {
   const results = {};
+  const refP = referenceTip();
   await Promise.all(Object.entries(cfg.services).map(async ([id, svc]) => {
     const inst = detectInstalled(id);
     if (inst === false) return results[id] = { installed: false, data: {} };
@@ -179,28 +250,32 @@ async function poll() {
     // without the app-data mount, "installed" means "answers on its port"
     results[id] = { installed: inst === true || data.up === true, data };
   }));
-  state = build(results, system()); saveHist();
+  state = build(results, system(), await refP); saveHist();
 }
 
 // ---------- demo ----------
-const SCEN = ['all-green', 'mempool-down', 'core-syncing', 'lnd-waiting', 'knots'];
+const SCEN = ['healthy', 'syncing-no-rpc', 'syncing-rpc', 'electrs-down', 'mempool-down', 'lnd-waiting', 'cant-verify', 'knots'];
 function demoState(sc) {
-  const H = 921400, r = {}, I = (data) => ({ installed: true, data: { up: true, ...data } }), N = { installed: false, data: {} };
+  const H = 921400, now = Date.now() / 1000, r = {}, I = (data) => ({ installed: true, data: { up: true, ...data } }), N = { installed: false, data: {} };
   for (const id of Object.keys(cfg.services)) r[id] = N;
+  let ref = H;
   r.bitcoin = I({ height: H, headers: H, sync: 100, ibd: false, peers: 10, version: '/Satoshi:29.0.0/', mempoolTx: 41230, mempoolMB: 92.4, diskGB: 742.1, pruned: false });
-  r.electrs = I({ height: H }); r.mempool = I({ height: H, api: true });
+  r.electrs = I({ height: H }); r.mempool = I({ height: H, api: true, tipTime: now - 420 });
   r.lightning = I({ walletState: 'SERVER_ACTIVE', synced: true, height: H, channels: 4, pending: 0, peers: 6, alias: 'NodeMaster' });
   r['ride-the-lightning'] = I({ up: null });
+  const noRpc = () => { r.bitcoin.data = { up: true, note: 'Port only. Set BITCOIN_RPC_USER/PASS for details.' }; };
+  if (sc === 'syncing-no-rpc') { noRpc(); r.electrs.data = { up: true, note: 'Indexing — tip not available yet' };
+    r.mempool.data = { up: true, api: true, height: 679149, tipTime: 1617000000 }; r.lightning.data = { up: true, walletState: 'NON_EXISTING' }; r['ride-the-lightning'] = N; }
+  if (sc === 'syncing-rpc') { const h = 442780; r.bitcoin.data = { ...r.bitcoin.data, height: h, sync: 12.4, ibd: true, diskGB: 98.3, mempoolTx: 0, mempoolMB: 0 };
+    r.electrs.data = { up: true, height: 430000 }; r.mempool.data = { up: true, api: true, height: h, tipTime: 1480000000 }; r.lightning.data = { up: true, walletState: 'NON_EXISTING' }; }
+  if (sc === 'electrs-down') r.electrs = { installed: true, data: { up: false } };
   if (sc === 'mempool-down') r.mempool = { installed: true, data: { up: false } };
-  if (sc === 'core-syncing') { const h = 312000; r.bitcoin.data = { ...r.bitcoin.data, height: h, sync: 12.0, ibd: true, diskGB: 98.3, mempoolTx: 0, mempoolMB: 0 };
-    r.electrs.data = { up: true, height: 290000 }; r.mempool.data = { up: true, api: true, height: h }; r.lightning.data = { up: true, walletState: 'NON_EXISTING' }; }
   if (sc === 'lnd-waiting') { r.lightning.data = { up: true, walletState: 'NON_EXISTING' }; r['ride-the-lightning'] = N; }
+  if (sc === 'cant-verify') { noRpc(); r.mempool = N; r.electrs = N; ref = null; r.lightning.data = { up: true, walletState: 'RPC_ACTIVE' }; }
   if (sc === 'knots') { r['bitcoin-knots'] = { installed: true, data: { ...r.bitcoin.data, version: '/Satoshi:28.1.0/Knots:20250305/' } }; r.bitcoin = N; }
-  const sys = { memTotal: 8.4e9, memAvail: sc === 'core-syncing' ? 2.9e9 : 4.6e9, swapTotal: 4.3e9, swapUsed: sc === 'core-syncing' ? 0.6e9 : 0.1e9, load: [1.2, 1.4, 1.3], cpus: 4, tempC: 56.4,
-    disk: { path: '/mnt/data', total: 2e12, free: sc === 'core-syncing' ? 1.85e12 : 1.12e12 }, uptime: 360000 };
-  const s = build(r, sys);
-  // fake history so sparklines show something
-  for (const sl of s.slots) for (const o of sl.active) o.history = Array.from({ length: 48 }, (_, i) => o.status === 'down' && i > 40 ? 0 : (i === 20 && o.id === 'mempool' ? 0.6 : 1));
+  const sys = { memTotal: 8.4e9, memAvail: 4.6e9, swapTotal: 4.3e9, swapUsed: 0.1e9, load: [1.2, 1.4, 1.3], cpus: 4, tempC: 56.4, disk: { path: '/mnt/data', total: 2e12, free: 1.12e12 }, uptime: 360000 };
+  const s = build(r, sys, ref);
+  for (const sl of s.slots) for (const o of sl.active) o.history = Array.from({ length: 48 }, (_, i) => o.status === 'down' && i > 40 ? 0 : 1);
   return { ...s, scenario: sc, scenarios: SCEN };
 }
 
@@ -210,12 +285,12 @@ http.createServer((req, res) => {
   if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405, { Allow: 'GET' }); return res.end('read-only'); }
   const u = new URL(req.url, 'http://x');
   if (u.pathname === '/api/status') {
-    const body = DEMO ? demoState(SCEN.includes(u.searchParams.get('scenario')) ? u.searchParams.get('scenario') : 'all-green') : state;
+    const body = DEMO ? demoState(SCEN.includes(u.searchParams.get('scenario')) ? u.searchParams.get('scenario') : 'healthy') : state;
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); return res.end(JSON.stringify(body));
   }
   const f = path.join(PUB, u.pathname === '/' ? 'index.html' : path.normalize(u.pathname).replace(/^(\.\.[/\\])+/, ''));
   if (!f.startsWith(PUB)) { res.writeHead(403); return res.end(); }
   fs.readFile(f, (e, d) => { if (e) { res.writeHead(404); return res.end('not found'); }
     const ext = path.extname(f); res.writeHead(200, { 'Content-Type': { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png' }[ext] || 'application/octet-stream' }); res.end(d); });
-}).listen(PORT, () => console.log(`Sovereign BTC Stack v2.1 on :${PORT}${DEMO ? ' (DEMO)' : ''}${RPC ? ' (RPC configured)' : ''}`));
+}).listen(PORT, () => console.log(`Sovereign BTC Stack v2.2 on :${PORT}${DEMO ? ' (DEMO)' : ''}${RPC ? ' (RPC configured)' : ''}`));
 if (!DEMO) { poll(); setInterval(poll, POLL); }
