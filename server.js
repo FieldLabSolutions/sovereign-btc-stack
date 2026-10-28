@@ -74,6 +74,8 @@ const probes = {
       const h = parseInt(r.body, 10), out = { up: true, api: true, height: isNaN(h) ? undefined : h };
       try { const b = JSON.parse((await get(`http://${svc.host}:${svc.port}/api/v1/blocks`)).body); // newest block first
         if (Array.isArray(b) && b[0] && b[0].timestamp) out.tipTime = b[0].timestamp; } catch {}
+      try { const m = JSON.parse((await get(`http://${svc.host}:${svc.port}/api/mempool`)).body); if (m && m.count != null) out.mempoolTx = m.count; } catch {}
+      try { const f = JSON.parse((await get(`http://${svc.host}:${svc.port}/api/v1/fees/recommended`)).body); if (f && f.fastestFee != null) out.fees = { fast: f.fastestFee, hour: f.hourFee, eco: f.economyFee }; } catch {}
       return out;
     } catch { return { up: await tcp(svc.host, svc.port), api: false }; }
   },
@@ -108,6 +110,29 @@ async function referenceTip() {
   refTip.at = Date.now();
   try { const r = await get(REF_URL, { ms: 4000 }); const h = parseInt(r.body, 10); refTip.height = r.code === 200 && h > 0 ? h : null; } catch { refTip.height = null; }
   return refTip.height;
+}
+
+// ---------- optional BTC price (outbound to a public price API; PRICE_ENABLED=0 turns it off) ----------
+const PRICE_ON = !['0', 'false', 'off', 'no'].includes(String(process.env.PRICE_ENABLED ?? (cfg.price && cfg.price.enabled === false ? '0' : '1')).toLowerCase());
+let price = { usd: null, at: 0, source: null, tried: 0 };
+async function fetchPrice() {
+  if (!PRICE_ON) return null;
+  if (Date.now() - price.tried < 60e3) return price;
+  price.tried = Date.now();
+  const mp = cfg.services.mempool, srcs = [];
+  if (mp) srcs.push(['your Mempool', `http://${mp.host}:${mp.port}/api/v1/prices`, b => b.USD]);
+  srcs.push(['mempool.space', 'https://mempool.space/api/v1/prices', b => b.USD],
+            ['Coinbase', 'https://api.coinbase.com/v2/prices/BTC-USD/spot', b => b.data && +b.data.amount]);
+  for (const [name, url, pick] of srcs) {
+    try { const r = await get(url, { ms: 4000 }); if (r.code !== 200) continue;
+      const v = +pick(JSON.parse(r.body)); if (v > 0) { price = { usd: v, at: Date.now(), source: name, tried: price.tried }; break; } } catch {}
+  }
+  return price;
+}
+function priceOut(p) { // never hand out an old number as current: drop it after 30 min
+  if (!PRICE_ON) return { enabled: false };
+  if (!p || !p.usd || Date.now() - p.at > 30 * 60e3) return { enabled: true, usd: null };
+  return { enabled: true, usd: p.usd, at: new Date(p.at).toISOString(), source: p.source };
 }
 
 // ---------- system ----------
@@ -217,7 +242,7 @@ function alert(id, s) {
 
 // ---------- poll ----------
 let state = { updated: null, demo: DEMO, slots: [], links: [], system: null };
-function build(results, sys, ref) {
+function build(results, sys, ref, pr) {
   const nodeSlot = cfg.slots.find(s => s.id === 'node');
   const nodeId = nodeSlot.options.find(o => results[o] && results[o].installed);
   const nodeHeight = nodeId && results[nodeId].data.headers != null ? results[nodeId].data.height : null;
@@ -237,11 +262,13 @@ function build(results, sys, ref) {
   const S = Object.fromEntries(slots.map(s => [s.id, s.active[0]]));
   const links = cfg.links.map(l => ({ ...l, ...linkHealth(l, S) }));
   return { updated: new Date().toISOString(), demo: DEMO, slots, links, system: sys,
-    chain: { referenceTip: ref || null, mempoolTip: ctx.ev.mempoolH ?? null, indexTip: ctx.ev.indexH ?? null } };
+    chain: { referenceTip: ref || null, mempoolTip: ctx.ev.mempoolH ?? null, indexTip: ctx.ev.indexH ?? null,
+      mempoolTx: (results.mempool && results.mempool.data.mempoolTx) ?? null, fees: (results.mempool && results.mempool.data.fees) || null },
+    price: priceOut(pr) };
 }
 async function poll() {
   const results = {};
-  const refP = referenceTip();
+  const refP = referenceTip(), prP = fetchPrice().catch(() => null);
   await Promise.all(Object.entries(cfg.services).map(async ([id, svc]) => {
     const inst = detectInstalled(id);
     if (inst === false) return results[id] = { installed: false, data: {} };
@@ -250,17 +277,17 @@ async function poll() {
     // without the app-data mount, "installed" means "answers on its port"
     results[id] = { installed: inst === true || data.up === true, data };
   }));
-  state = build(results, system(), await refP); saveHist();
+  state = build(results, system(), await refP, await prP); saveHist();
 }
 
 // ---------- demo ----------
 const SCEN = ['healthy', 'syncing-no-rpc', 'syncing-rpc', 'electrs-down', 'mempool-down', 'lnd-waiting', 'cant-verify', 'knots'];
-function demoState(sc) {
+function demoState(sc, pq) {
   const H = 921400, now = Date.now() / 1000, r = {}, I = (data) => ({ installed: true, data: { up: true, ...data } }), N = { installed: false, data: {} };
   for (const id of Object.keys(cfg.services)) r[id] = N;
   let ref = H;
   r.bitcoin = I({ height: H, headers: H, sync: 100, ibd: false, peers: 10, version: '/Satoshi:29.0.0/', mempoolTx: 41230, mempoolMB: 92.4, diskGB: 742.1, pruned: false });
-  r.electrs = I({ height: H }); r.mempool = I({ height: H, api: true, tipTime: now - 420 });
+  r.electrs = I({ height: H }); r.mempool = I({ height: H, api: true, tipTime: now - 420, mempoolTx: 41230, fees: { fast: 6, hour: 3, eco: 1 } });
   r.lightning = I({ walletState: 'SERVER_ACTIVE', synced: true, height: H, channels: 4, pending: 0, peers: 6, alias: 'NodeMaster' });
   r['ride-the-lightning'] = I({ up: null });
   const noRpc = () => { r.bitcoin.data = { up: true, note: 'Port only. Set BITCOIN_RPC_USER/PASS for details.' }; };
@@ -274,7 +301,8 @@ function demoState(sc) {
   if (sc === 'cant-verify') { noRpc(); r.mempool = N; r.electrs = N; ref = null; r.lightning.data = { up: true, walletState: 'RPC_ACTIVE' }; }
   if (sc === 'knots') { r['bitcoin-knots'] = { installed: true, data: { ...r.bitcoin.data, version: '/Satoshi:28.1.0/Knots:20250305/' } }; r.bitcoin = N; }
   const sys = { memTotal: 8.4e9, memAvail: 4.6e9, swapTotal: 4.3e9, swapUsed: 0.1e9, load: [1.2, 1.4, 1.3], cpus: 4, tempC: 56.4, disk: { path: '/mnt/data', total: 2e12, free: 1.12e12 }, uptime: 360000 };
-  const s = build(r, sys, ref);
+  const pr = pq === 'na' ? null : { usd: 97412.35, at: Date.now() - (pq === 'old' ? 7 * 60e3 : 20e3), source: 'mempool.space' };
+  const s = build(r, sys, ref, pr);
   for (const sl of s.slots) for (const o of sl.active) o.history = Array.from({ length: 48 }, (_, i) => o.status === 'down' && i > 40 ? 0 : 1);
   return { ...s, scenario: sc, scenarios: SCEN };
 }
@@ -285,12 +313,12 @@ http.createServer((req, res) => {
   if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405, { Allow: 'GET' }); return res.end('read-only'); }
   const u = new URL(req.url, 'http://x');
   if (u.pathname === '/api/status') {
-    const body = DEMO ? demoState(SCEN.includes(u.searchParams.get('scenario')) ? u.searchParams.get('scenario') : 'healthy') : state;
+    const body = DEMO ? demoState(SCEN.includes(u.searchParams.get('scenario')) ? u.searchParams.get('scenario') : 'healthy', u.searchParams.get('price')) : state;
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); return res.end(JSON.stringify(body));
   }
   const f = path.join(PUB, u.pathname === '/' ? 'index.html' : path.normalize(u.pathname).replace(/^(\.\.[/\\])+/, ''));
   if (!f.startsWith(PUB)) { res.writeHead(403); return res.end(); }
   fs.readFile(f, (e, d) => { if (e) { res.writeHead(404); return res.end('not found'); }
     const ext = path.extname(f); res.writeHead(200, { 'Content-Type': { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png' }[ext] || 'application/octet-stream' }); res.end(d); });
-}).listen(PORT, () => console.log(`Sovereign BTC Stack v2.2 on :${PORT}${DEMO ? ' (DEMO)' : ''}${RPC ? ' (RPC configured)' : ''}`));
+}).listen(PORT, () => console.log(`Sovereign BTC Stack v2.3 on :${PORT}${DEMO ? ' (DEMO)' : ''}${RPC ? ' (RPC configured)' : ''}`));
 if (!DEMO) { poll(); setInterval(poll, POLL); }

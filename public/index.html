@@ -56,8 +56,14 @@ svg.big{width:100%;height:50px}
 .li span{font-weight:600}.li.down b,.li.down span{color:var(--down)}.li.warn b,.li.warn span{color:var(--warn)}.li.waiting b,.li.waiting span{color:var(--wait)}
 .lg{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:8px;font-size:11px;color:var(--mut)}.lg span{display:flex;align-items:center;gap:5px}
 @media(min-width:900px){#flow .gd{font-size:clamp(12px,.8vw,16px)}#lk{font-size:15px}.li{font-size:15px}}
+#price,#stats{display:none}
+@media(min-width:1100px){header{display:grid;grid-template-columns:auto 1fr auto;grid-template-areas:"brand mid sum" "demo demo demo";align-items:center;column-gap:4vw;padding:14px 4vw}
+ h1{font-size:30px;line-height:1.1}#price{display:block;margin-top:4px;font-size:24px;font-weight:600;font-variant-numeric:tabular-nums}#price small{font-size:12px;font-weight:400;color:var(--mut);margin-left:8px}#price.na{font-size:14px;font-weight:400;color:var(--mut)}
+ #brand{grid-area:brand}#mid{grid-area:mid;text-align:center}#sum{grid-area:sum;margin-top:0;justify-content:flex-end;max-width:30vw}#demo{grid-area:demo}
+ #meta{font-size:13px;margin:0 0 6px}#stats{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+ .st{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:5px 12px;min-width:92px}.st b{display:block;font-size:17px;font-variant-numeric:tabular-nums}.st span{font-size:11px;color:var(--mut)}.st.warn b{color:var(--warn)}}
 </style></head><body>
-<header><h1>₿ Sovereign BTC Stack</h1><div id="meta">Connecting…</div><div id="sum"></div><div id="demo"></div></header>
+<header><div id="brand"><h1>₿ Sovereign BTC Stack</h1><div id="price"></div></div><div id="mid"><div id="meta">Connecting…</div><div id="stats"></div></div><div id="sum"></div><div id="demo"></div></header>
 <main><div id="flow"></div><div id="lkw"></div></main>
 <div id="sheet" onclick="if(event.target===this)closeSheet()"><div class="in" id="sheetIn"></div></div>
 <script>
@@ -112,8 +118,16 @@ function wires(){const f=$('#flow');if(!f||!S)return;const fr=f.getBoundingClien
 function sysHTML(sy){if(!sy)return '';const memL=sy.memAvail<1e9,sw=sy.swapTotal?sy.swapUsed/sy.swapTotal:0,dk=sy.disk?1-sy.disk.free/sy.disk.total:null;
  return `<div class="slot sysbox ${memL||sw>.5||dk>.9?'down':'ok'}" onclick="showSys()"><div class="k">System · Node Master ›</div><div class="sys">${[[gb(sy.memAvail)+' GB','RAM free',memL],[gb(sy.swapUsed)+' GB','Swap used',sw>.5],[dk==null?'—':Math.round(dk*100)+'%','Disk used',dk>.9],[sy.tempC==null?'—':Math.round(sy.tempC)+'°C','CPU temp',sy.tempC>75]]
    .map(([v,l,bad])=>`<div class="g"><b style="color:${bad?'#f85149':'#e6edf3'}">${v}</b><span>${l}</span></div>`).join('')}</div></div>`}
+function priceHTML(p){if(!p||p.enabled===false)return '';if(p.usd==null)return ['na','Price unavailable'];
+ const age=(Date.now()-new Date(p.at))/60e3;return ['',`$${Math.round(p.usd).toLocaleString('en-US')}<small>BTC/USD${age>3?' · as of '+Math.round(age)+' min ago':''}</small>`]}
+function statsHTML(){const ch=S.chain||{},nd=(S.slots.find(s=>s.id==='node')||{active:[]}).active[0],ix=(S.slots.find(s=>s.id==='indexer')||{active:[]}).active[0];
+ const nh=nd&&nd.data.height!=null?nd.data.height:ch.mempoolTip,sy=nd&&nd.data.sync,f=ch.fees;
+ return [['Network tip',ch.referenceTip!=null?fmt(ch.referenceTip):'—'],['Node height',nh!=null?fmt(nh):'—',sy!=null&&sy<100],['Sync',sy!=null?(sy>=100?'100%':'≈'+sy+'%'):'—',sy!=null&&sy<100],
+  ['Index height',ix&&ix.data.height!=null?fmt(ix.data.height):'—'],['Mempool',ch.mempoolTx!=null?fmt(ch.mempoolTx)+' tx':'—'],['Fees fast/hour',f?f.fast+' / '+f.hour+' sat/vB':'—']]
+  .map(([l,v,w])=>`<div class="st${w?' warn':''}"><b>${v}</b><span>${l}</span></div>`).join('')}
 function render(){if(!S)return;const all=S.slots.flatMap(s=>s.active),c=k=>all.filter(o=>o.status===k).length;
  $('#meta').textContent=`Node Master · updated ${new Date(S.updated).toLocaleTimeString()}${S.demo?' · DEMO':''}`;
+ {const ph=priceHTML(S.price);$('#price').className=ph?ph[0]:'';$('#price').innerHTML=ph?ph[1]:'';$('#stats').innerHTML=statsHTML()}
  $('#sum').innerHTML=[['ok','OK','#3fb950'],['warn','Syncing / behind','#d29922'],['waiting','Waiting','#58a6ff'],['down','Down','#f85149']].filter(([k])=>c(k)).map(([k,t,col])=>`<span class="pill" style="color:${col}">● ${c(k)} ${t}</span>`).join('');
  $('#lkw').innerHTML=linksHTML();$('#flow').innerHTML=S.slots.map(slotHTML).join(''); requestAnimationFrame(wires);
  if(detail)showDetail(detail,true);
@@ -129,6 +143,6 @@ function showDetail(id,keep){const o=S.slots.flatMap(s=>s.active).find(o=>o.id==
 function showSys(){const s=S.system;detail=null;$('#sheetIn').innerHTML=`<div style="display:flex;justify-content:space-between"><div style="font-size:20px;font-weight:600">System</div><button style="flex:none" onclick="closeSheet()">✕</button></div>
  <div class="kv">${[['RAM available',gb(s.memAvail)+' / '+gb(s.memTotal)+' GB'],['Swap used',gb(s.swapUsed)+' / '+gb(s.swapTotal)+' GB'],['Disk '+(s.disk?s.disk.path:''),s.disk?gb(s.disk.total-s.disk.free)+' / '+gb(s.disk.total)+' GB':'—'],['Disk free',s.disk?gb(s.disk.free)+' GB':'—'],['CPU temp',s.tempC==null?'—':s.tempC+' °C'],['Load (1/5/15m)',s.load.join(' / ')],['CPUs',s.cpus],['Uptime',Math.floor(s.uptime/86400)+'d '+Math.floor(s.uptime%86400/3600)+'h']].map(([k,v])=>`<div><span>${k}</span><b>${v}</b></div>`).join('')}</div>`;$('#sheet').classList.add('on')}
 function closeSheet(){detail=null;$('#sheet').classList.remove('on')}
-async function load(){try{S=await (await fetch('api/status?scenario='+scen,{cache:'no-store'})).json();render()}catch{$('#meta').textContent='⚠ Cannot reach Sovereign BTC Stack server'}}
+async function load(){try{S=await (await fetch('api/status?scenario='+scen+(new URLSearchParams(location.search).get('price')?'&price='+new URLSearchParams(location.search).get('price'):''),{cache:'no-store'})).json();render()}catch{$('#meta').textContent='⚠ Cannot reach Sovereign BTC Stack server'}}
 new ResizeObserver(()=>requestAnimationFrame(wires)).observe(document.body);load();setInterval(load,15000);
 </script></body></html>

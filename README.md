@@ -18,6 +18,9 @@ and amber "can't verify sync" when there is no evidence — never a false green.
 
 Zero dependencies: Node.js 18.15+, `server.js` + `public/index.html`. MIT.
 
+## Desktop top bar (v2.3)
+On screens 1100 px and wider the header is a left-to-right bar: title and BTC price on the far left, node name, update time and quick stats (network tip, node height, sync %, index height, mempool tx, fees from your Mempool) in the middle, status pills on the right. Phone layout is unchanged.
+
 ## Run
     DEMO=1 node server.js            # fake data; pick scenario in the header or ?scenario=
                                      # healthy | syncing-no-rpc | syncing-rpc | electrs-down | mempool-down | lnd-waiting | cant-verify | knots
@@ -34,6 +37,7 @@ Zero dependencies: Node.js 18.15+, `server.js` + `public/index.html`. MIT.
 | UI_PROBE_HOST | host to TCP-probe UI-only apps (RTL, ThunderHub); unset = shown grey "no health probe" |
 | HISTORY_FILE | 24h ring buffer (5-min buckets), default data/history.json |
 | REFERENCE_TIP_URL | optional public tip height URL for sync detection (default mempool.space; empty = off) |
+| PRICE_ENABLED | `1` (default) shows the BTC/USD price in the wide desktop top bar. **Makes an outbound request** (at most once per 60 s) to a public price API: your local Mempool `/api/v1/prices` first, then `https://mempool.space/api/v1/prices`, then `https://api.coinbase.com/v2/prices/BTC-USD/spot`. Set `0` to turn off (or `"price":{"enabled":false}` in config.json). Offline it shows "Price unavailable"; a price older than 30 min is never shown. |
 | ALERT_WEBHOOK_URL | **off by default**. If set (or `alerts.enabled` in config.json), POSTs `{service,status,detail}` on each state change. |
 
 Statuses: ok (green), warn (amber: syncing, >3 blocks behind node, no peers), waiting (blue: LND wallet not created/locked — normal, not an error), down (red), unknown (grey).
