@@ -1,4 +1,4 @@
-// Sovereign BTC Stack v2.2 — read-only monitoring server. MIT License. No dependencies.
+// Sovereign BTC Stack v2.4.0 — read-only monitoring server. MIT License. No dependencies.
 'use strict';
 const http = require('http'), https = require('https'), net = require('net'), fs = require('fs'), os = require('os'), path = require('path');
 const PORT = +process.env.PORT || 3880;
@@ -64,7 +64,13 @@ const probes = {
     } catch { return { up: true, note: 'RPC not answering yet' }; }
   },
   async electrum(svc) {
-    if (!await tcp(svc.host, svc.port)) return { up: false };
+    if (!await tcp(svc.host, svc.port)) {
+      // Electrs/Fulcrum do not open the Electrum port until the initial index is built.
+      // If its web UI answers, it is running and indexing; otherwise we still can't tell building from broken.
+      const ui = UI_PROBE_HOST && svc.uiPort ? await tcp(UI_PROBE_HOST, svc.uiPort) : null;
+      if (ui === false) return { up: false, note: 'Not answering (Electrum port and web page both closed)' };
+      return { up: true, indexing: true, note: 'Still building its index' };
+    }
     try { return { up: true, height: await electrumTip(svc.host, svc.port) }; }
     catch { return { up: true, note: 'Indexing — tip not available yet' }; }
   },
@@ -92,13 +98,20 @@ const probes = {
       return out;
     } catch { return { up: await tcp(svc.host, svc.port) }; }
   },
+  async reach(svc) { // TCP check: container hostnames on Umbrel's network first, then UI_PROBE_HOST:uiPort/port
+    const t = [...(svc.targets || [])]; if (UI_PROBE_HOST) for (const p of [svc.port, svc.uiPort]) if (p) t.push([UI_PROBE_HOST, p]);
+    if (!t.length) return { up: null };
+    for (const [h, p] of t) if (await tcp(h, p, 2000)) return { up: true, via: p };
+    return { up: false, unreachable: true };
+  },
   async tcp(svc) { return { up: await tcp(svc.host, svc.port) }; },
   async ui(svc) { if (!UI_PROBE_HOST || !svc.uiPort) return { up: null }; return { up: await tcp(UI_PROBE_HOST, svc.uiPort) }; }
 };
 
 function detectInstalled(id) {
   if (!APP_DATA_DIR) return null;   // unknown: fall back to reachability
-  try { return fs.statSync(path.join(APP_DATA_DIR, id)).isDirectory(); } catch { return false; }
+  const ids = [cfg.services[id].appId || id];
+  try { return ids.some(a => { try { return fs.statSync(path.join(APP_DATA_DIR, a)).isDirectory(); } catch { return false; } }); } catch { return false; }
 }
 
 // ---------- optional public reference tip (works fine without outbound internet) ----------
@@ -157,6 +170,7 @@ const GUIDE = {
   'ride-the-lightning': 'A web page for managing Lightning channels.',
   thunderhub: 'A web page for managing Lightning channels.',
   'etbc-pool': 'Your solo mining pool. Miners send work here; it gets block templates from the node.',
+  datum: 'DATUM Gateway builds block templates from your own node and hands them to your miners over stratum.',
   'miner-controller': 'Controls your miners (modes, schedules, heat rules).'
 };
 // Chain evidence when there is no RPC login: Mempool's tip height + tip block time, Electrs height, optional public tip.
@@ -174,6 +188,7 @@ function chainEvidence(results, ref) {
 }
 function evaluate(id, r, ctx) {
   const g = GUIDE[id] || '';
+  if (r.unreachable) return { status: 'unknown', reason: "Installed · can't reach it yet", guide: `${g} Umbrel lists it, but this dashboard can't reach it yet (still starting, or on another network). Shown gray, not red, until it answers.` };
   if (r.up === false) return { status: 'down', reason: r.note || 'Not reachable', guide: `${g} It is not answering. Open it in Umbrel and restart it if it stays red.` };
   if (r.up === null) return { status: 'unknown', reason: 'Installed (no health probe yet)', guide: `${g} This dashboard can't check its health yet, so it shows gray, not green.` };
   if (id === 'bitcoin' || id === 'bitcoin-knots') {
@@ -197,7 +212,7 @@ function evaluate(id, r, ctx) {
   }
   if (r.api === false) return { status: 'down', reason: 'API not answering', guide: `${g} The port is open but its API is not answering. Restart it in Umbrel if it stays red.` };
   if (id === 'electrs' || id === 'fulcrum') {
-    if (r.height == null) return { status: 'warn', reason: r.note || 'Indexing', guide: `${g} It is building its index and can't answer lookups yet.${ctx.ev.syncing ? ' It has to wait for the node to finish syncing first.' : ''} Nothing to fix.` };
+    if (r.height == null) return { status: 'warn', reason: 'Still building its index', guide: `${g} It is building its index and can't answer lookups yet.${ctx.ev.syncing ? ' It has to wait for the node to finish syncing first.' : ''} Nothing to fix.` };
   }
   const top = ctx.ev.ref || ctx.nodeHeight || ctx.ev.best;
   if (r.height != null && top != null && top - r.height > 3) return { status: 'warn', reason: `${(top - r.height).toLocaleString()} blocks behind`, guide: `${g} It is behind the chain tip${ctx.ev.syncing ? ' because the node is still syncing' : ''}. It will catch up on its own.` };
@@ -254,7 +269,8 @@ function build(results, sys, ref, pr) {
       if (r.installed) { record(id, ev.status !== 'down'); alert(id, ev); }
       const data = r.installed ? { ...r.data } : {};
       if (ev.sync != null && data.sync == null) data.sync = ev.sync;
-      return { id, label: svc.label, installed: r.installed, uiPort: svc.uiPort, ...ev, data, history: (hist[id] || []).map(b => +(b.up / b.n).toFixed(2)) };
+      const appId = svc.appId || id, storeUrl = appId.startsWith('fieldlab-') ? `https://github.com/FieldLabSolutions/fieldlab-umbrel-store/tree/main/${appId}` : `https://apps.umbrel.com/app/${appId}`;
+      return { id, label: svc.label, installed: r.installed, uiPort: svc.uiPort, storeUrl, ...ev, data, history: (hist[id] || []).map(b => +(b.up / b.n).toFixed(2)) };
     });
     const active = opts.filter(o => o.installed);
     return { id: sl.id, label: sl.label, active, others: opts.filter(o => !o.installed) };
@@ -281,7 +297,7 @@ async function poll() {
 }
 
 // ---------- demo ----------
-const SCEN = ['healthy', 'syncing-no-rpc', 'syncing-rpc', 'electrs-down', 'mempool-down', 'lnd-waiting', 'cant-verify', 'knots'];
+const SCEN = ['healthy', 'syncing-no-rpc', 'syncing-rpc', 'electrs-indexing', 'electrs-down', 'mempool-down', 'lnd-waiting', 'datum-missing', 'cant-verify', 'knots'];
 function demoState(sc, pq) {
   const H = 921400, now = Date.now() / 1000, r = {}, I = (data) => ({ installed: true, data: { up: true, ...data } }), N = { installed: false, data: {} };
   for (const id of Object.keys(cfg.services)) r[id] = N;
@@ -290,11 +306,14 @@ function demoState(sc, pq) {
   r.electrs = I({ height: H }); r.mempool = I({ height: H, api: true, tipTime: now - 420, mempoolTx: 41230, fees: { fast: 6, hour: 3, eco: 1 } });
   r.lightning = I({ walletState: 'SERVER_ACTIVE', synced: true, height: H, channels: 4, pending: 0, peers: 6, alias: 'NodeMaster' });
   r['ride-the-lightning'] = I({ up: null });
+  r.datum = I({ via: 23334 }); r['etbc-pool'] = I({ via: 3333 }); r['miner-controller'] = I({ via: 8080 });
   const noRpc = () => { r.bitcoin.data = { up: true, note: 'Port only. Set BITCOIN_RPC_USER/PASS for details.' }; };
   if (sc === 'syncing-no-rpc') { noRpc(); r.electrs.data = { up: true, note: 'Indexing — tip not available yet' };
     r.mempool.data = { up: true, api: true, height: 679149, tipTime: 1617000000 }; r.lightning.data = { up: true, walletState: 'NON_EXISTING' }; r['ride-the-lightning'] = N; }
   if (sc === 'syncing-rpc') { const h = 442780; r.bitcoin.data = { ...r.bitcoin.data, height: h, sync: 12.4, ibd: true, diskGB: 98.3, mempoolTx: 0, mempoolMB: 0 };
     r.electrs.data = { up: true, height: 430000 }; r.mempool.data = { up: true, api: true, height: h, tipTime: 1480000000 }; r.lightning.data = { up: true, walletState: 'NON_EXISTING' }; }
+  if (sc === 'electrs-indexing') r.electrs.data = { up: true, indexing: true, note: 'Still building its index' };
+  if (sc === 'datum-missing') { r.datum = N; r['miner-controller'] = { installed: true, data: { up: false, unreachable: true } }; }
   if (sc === 'electrs-down') r.electrs = { installed: true, data: { up: false } };
   if (sc === 'mempool-down') r.mempool = { installed: true, data: { up: false } };
   if (sc === 'lnd-waiting') { r.lightning.data = { up: true, walletState: 'NON_EXISTING' }; r['ride-the-lightning'] = N; }
@@ -319,6 +338,6 @@ http.createServer((req, res) => {
   const f = path.join(PUB, u.pathname === '/' ? 'index.html' : path.normalize(u.pathname).replace(/^(\.\.[/\\])+/, ''));
   if (!f.startsWith(PUB)) { res.writeHead(403); return res.end(); }
   fs.readFile(f, (e, d) => { if (e) { res.writeHead(404); return res.end('not found'); }
-    const ext = path.extname(f); res.writeHead(200, { 'Content-Type': { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png' }[ext] || 'application/octet-stream' }); res.end(d); });
-}).listen(PORT, () => console.log(`Sovereign BTC Stack v2.3 on :${PORT}${DEMO ? ' (DEMO)' : ''}${RPC ? ' (RPC configured)' : ''}`));
+    const ext = path.extname(f); res.writeHead(200, { 'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=86400', 'Content-Type': { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json' }[ext] || 'application/octet-stream' }); res.end(d); });
+}).listen(PORT, () => console.log(`Sovereign BTC Stack v2.4.0 on :${PORT}${DEMO ? ' (DEMO)' : ''}${RPC ? ' (RPC configured)' : ''}`));
 if (!DEMO) { poll(); setInterval(poll, POLL); }

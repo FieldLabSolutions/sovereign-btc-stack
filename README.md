@@ -1,4 +1,4 @@
-# Sovereign BTC Stack (v2.2)
+# Sovereign BTC Stack (v2.4.0)
 Read-only monitoring dashboard for a Bitcoin node (built for "Node Master", Umbrel on Raspberry Pi 5).
 Each slot (Node, Indexer, Explorer, Lightning, Lightning UI, Mining) shows only the app that is detected;
 alternatives sit behind a small "See other options" button. Tap a service for its detail view.
@@ -42,7 +42,7 @@ On screens 1100 px and wider the header is a left-to-right bar: title and BTC pr
 
 Statuses: ok (green), warn (amber: syncing, >3 blocks behind node, no peers), waiting (blue: LND wallet not created/locked — normal, not an error), down (red), unknown (grey).
 Read-only: HTTP server answers GET/HEAD only (405 otherwise); probes are TCP connects, GETs, the Electrum `blockchain.headers.subscribe` call and read-only RPC methods.
-"Open UI" links use the page's own hostname + the app's Umbrel port, so they work via umbrel.local or 192.168.4.60.
+"Open UI" links use the page's own hostname + the app's Umbrel port, so they work via umbrel.local or the LAN IP.
 
 ## Ports / addresses
 Verified 2026-10-27 against getumbrel/umbrel-apps `master` (`<app>/umbrel-app.yml` port, `<app>/exports.sh`, mempool `docker-compose.yml`). Not yet checked live on Node Master.
@@ -66,3 +66,11 @@ LND `/v1/state` path is standard LND REST but not tested against this install; m
 
 ## Umbrel package
 `umbrel-package/` is an **UNTESTED** skeleton (store yml + app folder with umbrel-app.yml, docker-compose.yml, exports.sh). `Dockerfile` builds the image; nothing is built or pushed.
+
+## v2.4.0
+- DATUM Gateway slot (Core → DATUM → Mining; app id `datum`, container `datum_datum_1`, stratum 23334, web UI 21000). Installed-but-unreachable shows gray, never red.
+- Mining slot detects `fieldlab-etbc-pool` (stratum 3333, UI 8745) and `fieldlab-miner-controller` (UI 8742) by Umbrel app id and container hostname; green only when a TCP check answers.
+- Electrs/Fulcrum with the Electrum port closed shows amber "Still building its index" (red only if its web UI is also closed, when `UI_PROBE_HOST` is set).
+- Favicon: /favicon.ico, /favicon.svg, /favicon-32.png, /apple-touch-icon.png.
+- "See other options" entries link to the app's store page.
+- Tests: `npm test`. Demo scenarios add `electrs-indexing`, `datum-missing`.
